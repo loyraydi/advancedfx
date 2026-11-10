@@ -2,6 +2,7 @@
 
 #include "addresses.h"
 #include "CampathDrawer.h"
+#include "MeowWorld.h"
 #include "ClientEntitySystem.h"
 #include "ClientRenderScopeOverlay.h"
 #include "GameEvents.h"
@@ -620,6 +621,13 @@ double MirvCamIO_GetTimeFn(void) {
 	return g_MirvTime.curtime_get();
 }
 
+CON_COMMAND(mirv_meow_world, "MeowHUD: pictures (logos) in the CS2 world, depth tested.") {
+	int argc = args->ArgC();
+	std::vector<const char*> argv;
+	for (int i = 0; i < argc; ++i) argv.push_back(args->ArgV(i));
+	g_MeowWorld.Console(argc, argv.data());
+}
+
 CON_COMMAND(mirv_camio, "New camera motion data import / export.") {
 	g_S2CamIO.Console_CamIO(args);
 }
@@ -981,6 +989,7 @@ void __fastcall New_CViewRender_UnkMakeMatrix(void* This) {
 	g_WorldToScreenMatrix.m[3][3] = proj[4*3+3];
 
 	g_CampathDrawer.OnEngineThread_SetupViewDone();
+	g_MeowWorld.OnEngineThread_SetupViewDone(g_WorldToScreenMatrix);
 }
 
 /*

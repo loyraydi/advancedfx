@@ -85,7 +85,7 @@ if(NOT AFX_MULTIBUILD_STAGING)
 
     if(AFX_MULTIBUILD_INSTALLER)
         execute_process(
-            COMMAND "$ENV{ProgramFiles\(x86\)}\\Microsoft Visual Studio\\Installer\\vswhere.exe" "-latest" "-version" "[17.0,18.0)" "-requires" "Microsoft.Component.MSBuild" "-find" "MSBuild\\**\\**\\Bin\\MSBuild.exe"
+            COMMAND "$ENV{ProgramFiles\(x86\)}\\Microsoft Visual Studio\\Installer\\vswhere.exe" "-latest" "-products" "*" "-version" "[17.0,18.0)" "-requires" "Microsoft.Component.MSBuild" "-find" "MSBuild\\**\\**\\Bin\\MSBuild.exe"
             OUTPUT_VARIABLE AFX_MULTIBUILD_VS_MSBUILD
             OUTPUT_STRIP_TRAILING_WHITESPACE
         )

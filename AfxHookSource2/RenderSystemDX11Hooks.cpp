@@ -3,6 +3,7 @@
 #include "RenderSystemDX11Hooks.h"
 
 #include "CampathDrawer.h"
+#include "MeowWorld.h"
 #include "RenderServiceHooks.h"
 #include "ReShadeAdvancedfx.h"
 #include "WrpConsole.h"
@@ -2124,6 +2125,7 @@ HRESULT STDMETHODCALLTYPE New_CreateRenderTargetView(  ID3D11Device * This,
                     g_CaptureScaler.OnTargetEnd();
                     //CAfxShaderResourceViews::Clear();
                     g_CampathDrawer.EndDevice();
+                    g_MeowWorld.EndDevice();
                     g_pDevice->Release();
                     g_pDevice = nullptr;
                 }
@@ -2134,6 +2136,7 @@ HRESULT STDMETHODCALLTYPE New_CreateRenderTargetView(  ID3D11Device * This,
                 g_pDevice = This;
                 g_pDevice->AddRef();
                 g_CampathDrawer.BeginDevice(This);
+                g_MeowWorld.BeginDevice(This);
             }
             pTexture->Release();
         }
@@ -2277,6 +2280,7 @@ void STDMETHODCALLTYPE New_OMSetRenderTargets( ID3D11DeviceContext * This,
                 This->RSGetViewports(&numViewPorts, &g_ViewPort);
 
                 g_CampathDrawer.OnRenderThread_Draw(This, &g_ViewPort, g_pCurrentRenderTargetView, g_pCurrentDepthStencilView);
+                g_MeowWorld.OnRenderThread_Draw(This, &g_ViewPort, g_pCurrentRenderTargetView, g_pCurrentDepthStencilView);
 
                 g_bInOwnDraw = false;
             }
@@ -2904,6 +2908,7 @@ void Before_Present() {
     g_bInOwnDraw = true;
 
     g_CampathDrawer.OnRenderThread_Present();
+    g_MeowWorld.OnRenderThread_Present();
 
     if (g_ReShadeAdvancedfx.IsConnected() && !g_ReShadeAdvancedfx.HasRendered()) {
         g_ReShadeAdvancedfx.AdvancedfxRenderEffects(nullptr, nullptr);
@@ -6012,6 +6017,7 @@ void RenderSystemDX11_EngineThread_Prepare() {
 void RenderSystemDX11_EngineThread_BeforeRender() {
     g_RenderCommands.EngineThread_EndFrame();
     g_CampathDrawer.OnEngineThread_EndFrame();
+    g_MeowWorld.OnEngineThread_EndFrame();
 }
 
 bool RenderSystemDX11_EngineThread_HasNextRenderPass() {
