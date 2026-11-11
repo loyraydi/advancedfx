@@ -1,0 +1,139 @@
+# MeowHUD HLAE: официальный HLAE + наш патч (mirv_meow_world — логотипы в мире CS2).
+#
+# Код MeowHUD живёт в ветке meow-world как разница с тегом из файла MEOWHUD_BASE.
+# Сборка берёт ОФИЦИАЛЬНЫЙ исходник нужного тега и накладывает этот патч — поэтому
+# под новую версию HLAE ничего переносить руками не нужно, пока патч ложится.
+# Не лёг (официальный код поменялся в тех же строках) — сборка падает, GitHub шлёт
+# письмо, патч правим вручную в ветке meow-world.
+#
+# Запуск: вручную (Actions → MeowHUD HLAE → Run) или из meowhud-sync.yml раз в сутки.
+name: MeowHUD HLAE
+
+on:
+  workflow_dispatch:
+    inputs:
+      hlae_tag:
+        description: "Тег официального HLAE (пусто — последний релиз)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Версия HLAE
+        id: ver
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.hlae_tag }}
+        run: |
+          $tag = $env:INPUT_TAG
+          if (-not $tag) { $tag = gh release view -R advancedfx/advancedfx --json tagName -q .tagName }
+          if (-not $tag) { throw "не удалось узнать тег HLAE" }
+          "tag=$tag" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+          "ver=$($tag.TrimStart('v'))" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+          Write-Host "HLAE $tag"
+
+      - name: Официальный исходник
+        uses: actions/checkout@v4
+        with:
+          repository: advancedfx/advancedfx
+          ref: ${{ steps.ver.outputs.tag }}
+          submodules: recursive
+          path: src
+
+      - name: Наш код (ветка meow-world)
+        uses: actions/checkout@v4
+        with:
+          ref: meow-world
+          fetch-depth: 0
+          path: meow
+
+      - name: Наложить патч MeowHUD
+        shell: bash
+        run: |
+          set -e
+          cd meow
+          base=$(tr -d '\r\n ' < MEOWHUD_BASE)
+          git fetch -q https://github.com/advancedfx/advancedfx.git "refs/tags/$base:refs/tags/$base"
+          git diff --binary "$base" HEAD -- . ':!.github' ':!MEOWHUD_BASE' ':!deps' > ../meow.patch
+          echo "патч от $base: $(wc -l < ../meow.patch) строк"
+          cd ../src
+          git apply --whitespace=nowarn ../meow.patch || { echo "::error::Патч MeowHUD не ложится на ${{ steps.ver.outputs.tag }} — обновите ветку meow-world"; exit 1; }
+          grep -q mirv_meow_world AfxHookSource2/main.cpp
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/iron
+
+      - name: Rust target
+        run: rustup target add x86_64-pc-windows-msvc
+
+      - name: Configure (x64 release)
+        working-directory: src
+        run: cmake --preset x64-release
+
+      # Сборка шейдеров HLAE зовёт ShaderBuilder.exe и fxc.exe по имени — кладём их в PATH
+      - name: ShaderBuilder + fxc в PATH
+        working-directory: src
+        shell: pwsh
+        run: |
+          cmake --build --preset x64-release --target shaderbuilder --parallel
+          $sb = Get-ChildItem build/x64-release -Recurse -Filter ShaderBuilder.exe | Select-Object -First 1
+          if (-not $sb) { throw "ShaderBuilder.exe not built" }
+          $sb.DirectoryName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          $fxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter fxc.exe | Where-Object { $_.DirectoryName -match "\\x64$" } | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $fxc) { throw "fxc.exe not found" }
+          $fxc.DirectoryName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Build AfxHookSource2
+        working-directory: src
+        run: cmake --build --preset x64-release --target AfxHookSource2 --parallel
+
+      - name: Pack over official HLAE
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HLAE_TAG: ${{ steps.ver.outputs.tag }}
+          HLAE_VER: ${{ steps.ver.outputs.ver }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          gh release download $env:HLAE_TAG -R advancedfx/advancedfx -p "hlae_*.zip" -D dl
+          $zip = Get-ChildItem dl -Filter "hlae_*.zip" | Where-Object { $_.Name -notmatch "pdb" } | Select-Object -First 1
+          if (-not $zip) { throw "official HLAE zip not found for $env:HLAE_TAG" }
+          Expand-Archive $zip.FullName -DestinationPath out
+          $dll = Get-ChildItem src/build/x64-release -Recurse -Filter AfxHookSource2.dll | Select-Object -First 1
+          if (-not $dll) { throw "built AfxHookSource2.dll not found" }
+          if (-not (Select-String -Path $dll.FullName -Pattern "mirv_meow_world" -SimpleMatch -Quiet)) { throw "в собранной dll нет mirv_meow_world" }
+          $target = Get-ChildItem out -Recurse -Filter AfxHookSource2.dll | Where-Object { $_.DirectoryName -match "x64$" } | Select-Object -First 1
+          if (-not $target) { throw "x64/AfxHookSource2.dll not found in official zip" }
+          Copy-Item $dll.FullName $target.FullName -Force
+          $root = $target.Directory.Parent.FullName
+          $meow = (git -C meow rev-parse --short HEAD)
+          "MeowHUD HLAE $env:HLAE_TAG (meow-world $meow)" | Out-File -Encoding utf8 (Join-Path $root "MEOWHUD-HLAE.txt")
+          Compress-Archive -Path (Join-Path $root "*") -DestinationPath "hlae-meowhud-$env:HLAE_VER.zip"
+          Get-FileHash "hlae-meowhud-$env:HLAE_VER.zip" -Algorithm SHA256 | Format-List
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hlae-meowhud
+          path: hlae-meowhud-*.zip
+
+      - name: Метка сборки
+        id: meow
+        shell: bash
+        run: echo "sha=$(git -C meow rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: meowhud-${{ steps.ver.outputs.tag }}-${{ github.run_number }}
+          target_commitish: main
+          # имя читает meowhud-sync.yml: тег HLAE + коммит meow-world, из которых собрано
+          name: MeowHUD HLAE ${{ steps.ver.outputs.tag }} (meow ${{ steps.meow.outputs.sha }})
+          files: hlae-meowhud-*.zip
+          make_latest: true

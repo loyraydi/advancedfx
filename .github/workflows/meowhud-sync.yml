@@ -1,0 +1,49 @@
+# Раз в сутки: есть ли новая официальная версия HLAE или новый код в meow-world,
+# под которые ещё нет нашей сборки. Есть — запускаем meowhud-hlae.yml и ждём результат.
+# Сборка упала (обычно патч не лёг на новую версию) — падает и этот запуск, а за
+# упавший запуск по расписанию GitHub присылает письмо владельцу репозитория.
+name: MeowHUD HLAE sync
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"   # каждые 6 часов: после обновления CS2 HLAE выходит быстро
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Нужна ли сборка
+        id: need
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+          tag=$(gh release view -R advancedfx/advancedfx --json tagName -q .tagName)
+          sha=$(gh api "repos/$REPO/commits/meow-world" -q .sha | cut -c1-7)
+          want="MeowHUD HLAE $tag (meow $sha)"
+          have=$(gh release list -R "$REPO" --limit 30 --json name -q '.[].name' || true)
+          echo "официальный: $tag, meow-world: $sha"
+          if echo "$have" | grep -Fxq "$want"; then
+            echo "уже собрано: $want"; echo "run=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "собираем: $want"; echo "run=yes" >> "$GITHUB_OUTPUT"; echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Собрать и дождаться
+        if: steps.need.outputs.run == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+          gh workflow run meowhud-hlae.yml -R "$REPO" --ref main -f hlae_tag="${{ steps.need.outputs.tag }}"
+          sleep 20
+          id=$(gh run list -R "$REPO" --workflow meowhud-hlae.yml --limit 1 --json databaseId -q '.[0].databaseId')
+          echo "сборка: https://github.com/$REPO/actions/runs/$id"
+          gh run watch "$id" -R "$REPO" --interval 60 --exit-status
