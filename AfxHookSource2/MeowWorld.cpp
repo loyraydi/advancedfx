@@ -69,7 +69,7 @@ bool CameraFromMatrix(const SOURCESDK::VMatrix& m, double pos[3], double fwd[3])
 }
 
 const char* kShader = R"(
-cbuffer Style : register(b0) { float4 cStyle; }; // x opacity, y brightness
+cbuffer Style : register(b0) { float4 cStyle; }; // x opacity, y brightness, z 1 = «свет стены»
 Texture2D tex0 : register(t0);
 SamplerState smp0 : register(s0);
 struct VsIn { float4 clip : POSITION; float2 uv : TEXCOORD0; };
@@ -80,6 +80,12 @@ float4 ps_main(VsOut i) : SV_TARGET {
 	c.rgb *= cStyle.y;
 	c *= cStyle.x;
 	clip(c.a - 0.002f);
+	if (cStyle.z > 0.5f) {
+		// «Свет стены»: множитель для цвета стены (blend ZERO, SRC_COLOR):
+		// стена × (1 − a + 2·цвет) — серый 50% не меняет стену, белый светлит, чёрный темнит.
+		// Тени, свет и фактура стены остаются — белый логотип тоже их берёт.
+		return float4(1.0f - c.a + 2.0f * c.rgb, 1.0f);
+	}
 	return c;
 }
 )";
@@ -273,9 +279,10 @@ bool CMeowWorld::EnsureDeviceObjects() {
 	ok = ok && SUCCEEDED(m_Device->CreateRasterizerState(&rd, &m_Raster));
 
 	// premultiplied: обычное, умножение («как краска»), экран, добавление
-	const D3D11_BLEND src[4] = {D3D11_BLEND_ONE, D3D11_BLEND_DEST_COLOR, D3D11_BLEND_ONE, D3D11_BLEND_ONE};
-	const D3D11_BLEND dst[4] = {D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_INV_SRC_COLOR, D3D11_BLEND_ONE};
-	for (int i = 0; i < 4; ++i) {
+	// 4 — «свет стены»: шейдер отдаёт множитель, стена × множитель
+	const D3D11_BLEND src[5] = {D3D11_BLEND_ONE, D3D11_BLEND_DEST_COLOR, D3D11_BLEND_ONE, D3D11_BLEND_ONE, D3D11_BLEND_ZERO};
+	const D3D11_BLEND dst[5] = {D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_INV_SRC_COLOR, D3D11_BLEND_ONE, D3D11_BLEND_SRC_COLOR};
+	for (int i = 0; i < 5; ++i) {
 		D3D11_BLEND_DESC bd = {};
 		auto& t = bd.RenderTarget[0];
 		t.BlendEnable = TRUE;
@@ -365,12 +372,12 @@ void CMeowWorld::OnRenderThread_Draw(ID3D11DeviceContext* immediate, const D3D11
 		m_Ctx->Unmap(m_Vb, 0);
 
 		if (SUCCEEDED(m_Ctx->Map(m_PsCb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) {
-			float s[4] = {q.opacity, q.brightness, 0, 0};
+			float s[4] = {q.opacity, q.brightness, q.blend == 4 ? 1.0f : 0.0f, 0};
 			memcpy(ms.pData, s, sizeof(s));
 			m_Ctx->Unmap(m_PsCb, 0);
 		}
 
-		int b = q.blend < 0 || q.blend > 3 ? 0 : q.blend;
+		int b = q.blend < 0 || q.blend > 4 ? 0 : q.blend;
 		m_Ctx->OMSetBlendState(m_Blend[b], nullptr, 0xffffffff);
 		m_Ctx->PSSetShaderResources(0, 1, &g->srv);
 		m_Ctx->Draw(6, 0);
@@ -654,7 +661,7 @@ void CMeowWorld::Console(int argc, const char* const* argv) {
 		"mirv_meow_world wall <id> <file.png> [width=96] - onto the wall/floor under the crosshair (screen centre)\n"
 		"mirv_meow_world here <id> <file.png> [width=64] [distance=128] - in front of the camera, facing it\n"
 		"mirv_meow_world move <id> <x> <y> <z> <pitch> <yaw> <roll> <width>\n"
-		"mirv_meow_world style <id> <opacity 0..1> [blend 0 normal|1 multiply|2 screen|3 add] [brightness 0..2]\n"
+		"mirv_meow_world style <id> <opacity 0..1> [blend 0 normal|1 multiply|2 screen|3 add|4 wall light] [brightness 0..2]\n"
 		"mirv_meow_world visible <id> 0|1 | remove <id> | clear | enabled [0|1] | list\n"
 	);
 }

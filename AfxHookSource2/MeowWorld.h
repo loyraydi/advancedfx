@@ -52,7 +52,7 @@ private:
 		bool visible = true;
 		float opacity = 1.0f;
 		float brightness = 1.0f;
-		int blend = 0; // 0 обычное, 1 умножение, 2 экран, 3 добавление
+		int blend = 0; // 0 обычное, 1 умножение, 2 экран, 3 добавление, 4 свет стены
 	};
 
 	struct DrawQuad {
@@ -108,7 +108,7 @@ private:
 	ID3D11Buffer* m_Vb = nullptr;
 	ID3D11Buffer* m_PsCb = nullptr;
 	ID3D11SamplerState* m_Sampler = nullptr;
-	ID3D11BlendState* m_Blend[4] = {};
+	ID3D11BlendState* m_Blend[5] = {};
 	ID3D11DepthStencilState* m_Depth = nullptr;
 	ID3D11RasterizerState* m_Raster = nullptr;
 	std::map<std::string, GpuTex> m_Tex;
