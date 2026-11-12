@@ -225,6 +225,15 @@ void CMeowWorld::OnEngineThread_SetupViewDone(const SOURCESDK::VMatrix& m) {
 				}
 				Corners(faced, c);
 			} else Corners(it, c);
+			if (it.zbias > 0 && m_HaveCam) {
+				// Как у декалей: каждый угол чуть к камере вдоль луча — проекция та же, глубина ближе
+				for (int k = 0; k < 4; ++k) {
+					double v[3] = {m_CamPos[0] - c[k][0], m_CamPos[1] - c[k][1], m_CamPos[2] - c[k][2]};
+					double l = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+					if (l <= it.zbias * 2) continue;
+					for (int i = 0; i < 3; ++i) c[k][i] += (float)(v[i] / l * it.zbias);
+				}
+			}
 			double d[3] = {it.pos[0] - m_CamPos[0], it.pos[1] - m_CamPos[1], it.pos[2] - m_CamPos[2]};
 			p.dist = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
 			prep.push_back(p);
@@ -786,6 +795,13 @@ void CMeowWorld::Console(int argc, const char* const* argv) {
 		else m_HaveObserved = false;
 		return;
 	}
+	if (!_stricmp(cmd, "zbias") && argc >= 4) {
+		// zbias <id> <юнитов> — не прятаться под неровным полом/стеной (сдвиг к камере вдоль луча)
+		std::unique_lock<std::mutex> lock(m_Mutex);
+		auto it = m_Items.find(argv[2]);
+		if (it != m_Items.end()) it->second.zbias = (float)atof(argv[3]);
+		return;
+	}
 	if (!_stricmp(cmd, "freecam") && argc >= 4) {
 		// freecam <id> 0|1 — показывать только на пролётке
 		std::unique_lock<std::mutex> lock(m_Mutex);
@@ -855,6 +871,7 @@ void CMeowWorld::Console(int argc, const char* const* argv) {
 		"mirv_meow_world smokes [<x> <y> <z> <scale 0..1>]... - smokes on the map (pictures behind them fade out); no args = none\n"
 		"mirv_meow_world smokeshape <radius=150> <height=85> <centre above point=70> <units per 1/e=18>\n"
 		"mirv_meow_world observed <x> <y> <z> | none - eyes of the observed player; camera far from them = free camera (prints meow_world_cam free|eye)\n"
+		"mirv_meow_world zbias <id> <units> - pull towards the camera along the view ray: same place on screen, uneven floor/wall no longer hides it\n"
 		"mirv_meow_world freecam <id> 0|1 - show only while the camera is free (flyby)\n"
 		"mirv_meow_world group <id> <n> - pictures of one group (n > 0) never overlap on screen: farther ones rise\n"
 		"mirv_meow_world occlude <id> 0|1 - smokes hide this picture (default 1)\n"
