@@ -12,6 +12,7 @@
 //
 // Консоль: mirv_meow_world (см. Console()).
 
+#include <array>
 #include "../deps/release/prop/AfxHookSource/SourceSdkShared.h"
 
 #include <d3d11.h>
@@ -53,6 +54,7 @@ private:
 		float opacity = 1.0f;
 		float brightness = 1.0f;
 		int blend = 0; // 0 обычное, 1 умножение, 2 экран, 3 добавление, 4 свет стены
+		bool occlude = true; // дым закрывает картинку (выкл — у таймеров смоков над своим дымом)
 		int face = 0; // 0 по углам, 1 к камере стоя (только поворот), 2 к камере с наклоном (без крена)
 	};
 
@@ -61,14 +63,19 @@ private:
 		std::shared_ptr<Image> image;
 		unsigned int version;
 		float clip[4][4]; // TL TR BR BL, clip-пространство
+		float world[4][3]; // те же углы в мире — шейдер считает, сколько луч к пикселю идёт сквозь дым
 		float opacity, brightness;
 		int blend;
+		bool occlude;
 	};
 
 	struct Snapshot {
 		std::vector<DrawQuad> quads;
 		double m[4][4]; // вид-проекция кадра
 		bool pick = false;
+		float cam[3] = {0, 0, 0};
+		std::vector<std::array<float, 4>> smokes; // x y z масштаб (0..1)
+		float smokeShape[4] = {150, 85, 70, 18};  // радиус по горизонтали, по высоте, центр над точкой, юнитов дыма на 1/e
 	};
 
 	// Установка на поверхность под центром экрана (по глубине игры)
@@ -92,6 +99,9 @@ private:
 	std::map<std::string, Item> m_Items;
 	bool m_Enabled = true;
 	unsigned int m_NextVersion = 1;
+	// Смоки на карте (шлёт клиент по GSI): дым не пишет глубину, поэтому картинки за ним гасим сами
+	std::vector<std::array<float, 4>> m_Smokes;
+	float m_SmokeShape[4] = {150, 85, 70, 18};
 	bool m_HaveCam = false;
 	double m_CamPos[3] = {0, 0, 0};
 	double m_CamFwd[3] = {1, 0, 0};

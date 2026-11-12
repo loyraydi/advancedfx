@@ -69,16 +69,45 @@ bool CameraFromMatrix(const SOURCESDK::VMatrix& m, double pos[3], double fwd[3])
 }
 
 const char* kShader = R"(
-cbuffer Style : register(b0) { float4 cStyle; }; // x opacity, y brightness, z 1 = «свет стены»
+cbuffer Style : register(b0) {
+	float4 cStyle;      // x opacity, y brightness, z 1 = «свет стены», w 1 = дым закрывает
+	float4 cCam;        // xyz камера, w число смоков
+	float4 cShape;      // x радиус по горизонтали, y по высоте, z центр над точкой, w юнитов дыма на 1/e
+	float4 cSmoke[16];  // xyz точка смока, w масштаб 0..1 (растёт/тает)
+};
 Texture2D tex0 : register(t0);
 SamplerState smp0 : register(s0);
-struct VsIn { float4 clip : POSITION; float2 uv : TEXCOORD0; };
-struct VsOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; };
-VsOut vs_main(VsIn i) { VsOut o; o.pos = i.clip; o.uv = i.uv; return o; }
+struct VsIn { float4 clip : POSITION; float2 uv : TEXCOORD0; float3 world : TEXCOORD1; };
+struct VsOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; float3 world : TEXCOORD1; };
+VsOut vs_main(VsIn i) { VsOut o; o.pos = i.clip; o.uv = i.uv; o.world = i.world; return o; }
+// Сколько света проходит от пикселя к камере сквозь облака дыма (эллипсоиды)
+float SmokeTransmittance(float3 p) {
+	float3 c = cCam.xyz;
+	float3 seg = p - c;
+	float segLen = length(seg);
+	float t = 1.0f;
+	int n = (int)cCam.w;
+	[loop] for (int k = 0; k < n; ++k) {
+		float s = cSmoke[k].w;
+		if (s <= 0.01f) continue;
+		float3 r = float3(cShape.x, cShape.x, cShape.y) * s;
+		float3 ctr = cSmoke[k].xyz + float3(0, 0, cShape.z);
+		float3 o = (c - ctr) / r, d = seg / r;
+		float a = dot(d, d), b = 2.0f * dot(o, d), cc = dot(o, o) - 1.0f;
+		float disc = b * b - 4.0f * a * cc;
+		if (disc <= 0.0f || a < 1e-8f) continue;
+		float sq = sqrt(disc);
+		float t0 = saturate((-b - sq) / (2.0f * a)), t1 = saturate((-b + sq) / (2.0f * a));
+		float inside = (t1 - t0) * segLen;
+		t *= exp(-inside / max(cShape.w, 1.0f));
+	}
+	return t;
+}
 float4 ps_main(VsOut i) : SV_TARGET {
 	float4 c = tex0.Sample(smp0, i.uv); // premultiplied
 	c.rgb *= cStyle.y;
 	c *= cStyle.x;
+	if (cStyle.w > 0.5f && cCam.w > 0.5f) c *= SmokeTransmittance(i.world);
 	clip(c.a - 0.002f);
 	if (cStyle.z > 0.5f) {
 		// «Свет стены»: множитель для цвета стены (blend ZERO, SRC_COLOR):
@@ -90,7 +119,8 @@ float4 ps_main(VsOut i) : SV_TARGET {
 }
 )";
 
-struct Vtx { float clip[4]; float uv[2]; };
+struct Vtx { float clip[4]; float uv[2]; float world[3]; };
+struct PsConsts { float style[4]; float cam[4]; float shape[4]; float smoke[16][4]; };
 
 bool Invert4(const double a[4][4], double inv[4][4]) {
 	double m[4][8];
@@ -161,6 +191,9 @@ void CMeowWorld::OnEngineThread_SetupViewDone(const SOURCESDK::VMatrix& m) {
 		m_HaveCam = CameraFromMatrix(m, m_CamPos, m_CamFwd);
 		if (!m_PendingMessage.empty()) { advancedfx::Message("%s", m_PendingMessage.c_str()); m_PendingMessage.clear(); }
 		snap->pick = m_Pick != nullptr;
+		for (int i = 0; i < 3; ++i) snap->cam[i] = (float)m_CamPos[i];
+		snap->smokes = m_Smokes;
+		for (int i = 0; i < 4; ++i) snap->smokeShape[i] = m_SmokeShape[i];
 		if (!m_Enabled && !snap->pick) return;
 		for (auto& kv : m_Items) {
 			const Item& it = kv.second;
@@ -183,7 +216,8 @@ void CMeowWorld::OnEngineThread_SetupViewDone(const SOURCESDK::VMatrix& m) {
 				}
 				Corners(faced, c);
 			} else Corners(it, c);
-			for (int k = 0; k < 4; ++k) ToClip(m, c[k], q.clip[k]);
+			for (int k = 0; k < 4; ++k) { ToClip(m, c[k], q.clip[k]); for (int i = 0; i < 3; ++i) q.world[k][i] = c[k][i]; }
+			q.occlude = it.occlude;
 			q.opacity = it.opacity;
 			q.brightness = it.brightness;
 			q.blend = it.blend;
@@ -247,11 +281,12 @@ bool CMeowWorld::EnsureDeviceObjects() {
 	}
 	bool ok = SUCCEEDED(m_Device->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, &m_Vs))
 		&& SUCCEEDED(m_Device->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, &m_Ps));
-	D3D11_INPUT_ELEMENT_DESC layout[2] = {
+	D3D11_INPUT_ELEMENT_DESC layout[3] = {
 		{"POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
 		{"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0},
+		{"TEXCOORD", 1, DXGI_FORMAT_R32G32B32_FLOAT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0},
 	};
-	ok = ok && SUCCEEDED(m_Device->CreateInputLayout(layout, 2, vs->GetBufferPointer(), vs->GetBufferSize(), &m_Layout));
+	ok = ok && SUCCEEDED(m_Device->CreateInputLayout(layout, 3, vs->GetBufferPointer(), vs->GetBufferSize(), &m_Layout));
 	SafeRelease(vs); SafeRelease(ps);
 
 	D3D11_BUFFER_DESC vb = {};
@@ -262,7 +297,7 @@ bool CMeowWorld::EnsureDeviceObjects() {
 	ok = ok && SUCCEEDED(m_Device->CreateBuffer(&vb, nullptr, &m_Vb));
 
 	D3D11_BUFFER_DESC cb = {};
-	cb.ByteWidth = 16;
+	cb.ByteWidth = sizeof(PsConsts);
 	cb.Usage = D3D11_USAGE_DYNAMIC;
 	cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 	cb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -378,14 +413,21 @@ void CMeowWorld::OnRenderThread_Draw(ID3D11DeviceContext* immediate, const D3D11
 		Vtx* v = (Vtx*)ms.pData;
 		for (int i = 0; i < 6; ++i) {
 			memcpy(v[i].clip, q.clip[tri[i]], sizeof(v[i].clip));
+			memcpy(v[i].world, q.world[tri[i]], sizeof(v[i].world));
 			v[i].uv[0] = uv[tri[i]][0];
 			v[i].uv[1] = uv[tri[i]][1];
 		}
 		m_Ctx->Unmap(m_Vb, 0);
 
 		if (SUCCEEDED(m_Ctx->Map(m_PsCb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) {
-			float s[4] = {q.opacity, q.brightness, q.blend == 4 ? 1.0f : 0.0f, 0};
-			memcpy(ms.pData, s, sizeof(s));
+			PsConsts pc = {};
+			pc.style[0] = q.opacity; pc.style[1] = q.brightness; pc.style[2] = q.blend == 4 ? 1.0f : 0.0f; pc.style[3] = q.occlude ? 1.0f : 0.0f;
+			size_t n = snap->smokes.size() < 16 ? snap->smokes.size() : 16;
+			for (int i = 0; i < 3; ++i) pc.cam[i] = snap->cam[i];
+			pc.cam[3] = (float)n;
+			for (int i = 0; i < 4; ++i) pc.shape[i] = snap->smokeShape[i];
+			for (size_t k = 0; k < n; ++k) for (int i = 0; i < 4; ++i) pc.smoke[k][i] = snap->smokes[k][i];
+			memcpy(ms.pData, &pc, sizeof(pc));
 			m_Ctx->Unmap(m_PsCb, 0);
 		}
 
@@ -637,6 +679,26 @@ void CMeowWorld::Console(int argc, const char* const* argv) {
 		it->second.brightness = f(5, it->second.brightness);
 		return;
 	}
+	if (!_stricmp(cmd, "smokes")) {
+		// smokes [x y z масштаб]... — все смоки на карте разом (пусто — смоков нет)
+		std::unique_lock<std::mutex> lock(m_Mutex);
+		m_Smokes.clear();
+		for (int i = 2; i + 3 < argc && m_Smokes.size() < 16; i += 4)
+			m_Smokes.push_back({(float)atof(argv[i]), (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3])});
+		return;
+	}
+	if (!_stricmp(cmd, "smokeshape") && argc >= 6) {
+		// smokeshape <радиус> <высота> <центр над точкой> <юнитов на 1/e>
+		std::unique_lock<std::mutex> lock(m_Mutex);
+		for (int i = 0; i < 4; ++i) m_SmokeShape[i] = (float)atof(argv[2 + i]);
+		return;
+	}
+	if (!_stricmp(cmd, "occlude") && argc >= 4) {
+		std::unique_lock<std::mutex> lock(m_Mutex);
+		auto it = m_Items.find(argv[2]);
+		if (it != m_Items.end()) it->second.occlude = atoi(argv[3]) != 0;
+		return;
+	}
 	if (!_stricmp(cmd, "face") && argc >= 4) {
 		// face <id> 0|1|2 — 1 к камере стоя, 2 к камере с наклоном
 		std::unique_lock<std::mutex> lock(m_Mutex);
@@ -683,6 +745,9 @@ void CMeowWorld::Console(int argc, const char* const* argv) {
 		"mirv_meow_world move <id> <x> <y> <z> <pitch> <yaw> <roll> <width>\n"
 		"mirv_meow_world style <id> <opacity 0..1> [blend 0 normal|1 multiply|2 screen|3 add|4 wall light] [brightness 0..2]\n"
 		"mirv_meow_world face <id> 0|1|2 - 0 fixed angles, 1 face the camera upright, 2 face the camera with pitch (no roll)\n"
+		"mirv_meow_world smokes [<x> <y> <z> <scale 0..1>]... - smokes on the map (pictures behind them fade out); no args = none\n"
+		"mirv_meow_world smokeshape <radius=150> <height=85> <centre above point=70> <units per 1/e=18>\n"
+		"mirv_meow_world occlude <id> 0|1 - smokes hide this picture (default 1)\n"
 		"mirv_meow_world visible <id> 0|1 | remove <id> | clear | enabled [0|1] | list\n"
 	);
 }
