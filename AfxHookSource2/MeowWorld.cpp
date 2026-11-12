@@ -170,7 +170,19 @@ void CMeowWorld::OnEngineThread_SetupViewDone(const SOURCESDK::VMatrix& m) {
 			q.image = it.image;
 			q.version = it.version;
 			float c[4][3];
-			Corners(it, c);
+			if (it.face && m_HaveCam) {
+				// Лицом к камере: forward смотрит из картинки на камеру, крена нет — стоит ровно
+				Item faced = it;
+				double n[3] = {m_CamPos[0] - it.pos[0], m_CamPos[1] - it.pos[1], m_CamPos[2] - it.pos[2]};
+				double len = sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+				if (len > 0.001) {
+					for (int i = 0; i < 3; ++i) n[i] /= len;
+					faced.ang[1] = (float)(atan2(n[1], n[0]) * 180 / kPi);
+					faced.ang[0] = it.face == 2 ? (float)(-asin(n[2] < -1 ? -1 : n[2] > 1 ? 1 : n[2]) * 180 / kPi) : 0.0f;
+					faced.ang[2] = 0;
+				}
+				Corners(faced, c);
+			} else Corners(it, c);
 			for (int k = 0; k < 4; ++k) ToClip(m, c[k], q.clip[k]);
 			q.opacity = it.opacity;
 			q.brightness = it.brightness;
@@ -559,6 +571,7 @@ void CMeowWorld::Console(int argc, const char* const* argv) {
 		it.ang[0] = f(7, 0); it.ang[1] = f(8, 0); it.ang[2] = f(9, 0);
 		it.width = f(10, 64);
 		it.visible = argc > 11 ? atoi(argv[11]) != 0 : true;
+		it.face = argc > 12 ? atoi(argv[12]) : 0;
 		return;
 	}
 	if (!_stricmp(cmd, "here") && argc >= 4) {
@@ -624,6 +637,13 @@ void CMeowWorld::Console(int argc, const char* const* argv) {
 		it->second.brightness = f(5, it->second.brightness);
 		return;
 	}
+	if (!_stricmp(cmd, "face") && argc >= 4) {
+		// face <id> 0|1|2 — 1 к камере стоя, 2 к камере с наклоном
+		std::unique_lock<std::mutex> lock(m_Mutex);
+		auto it = m_Items.find(argv[2]);
+		if (it != m_Items.end()) it->second.face = atoi(argv[3]);
+		return;
+	}
 	if (!_stricmp(cmd, "visible") && argc >= 4) {
 		std::unique_lock<std::mutex> lock(m_Mutex);
 		auto it = m_Items.find(argv[2]);
@@ -657,11 +677,12 @@ void CMeowWorld::Console(int argc, const char* const* argv) {
 		return;
 	}
 	advancedfx::Message(
-		"mirv_meow_world set <id> <file.png> <x> <y> <z> <pitch> <yaw> <roll> <width> [visible] - picture in the world, faces (pitch, yaw); floor = pitch -90\n"
+		"mirv_meow_world set <id> <file.png> <x> <y> <z> <pitch> <yaw> <roll> <width> [visible] [face 0|1|2] - picture in the world, faces (pitch, yaw); floor = pitch -90\n"
 		"mirv_meow_world wall <id> <file.png> [width=96] - onto the wall/floor under the crosshair (screen centre)\n"
 		"mirv_meow_world here <id> <file.png> [width=64] [distance=128] - in front of the camera, facing it\n"
 		"mirv_meow_world move <id> <x> <y> <z> <pitch> <yaw> <roll> <width>\n"
 		"mirv_meow_world style <id> <opacity 0..1> [blend 0 normal|1 multiply|2 screen|3 add|4 wall light] [brightness 0..2]\n"
+		"mirv_meow_world face <id> 0|1|2 - 0 fixed angles, 1 face the camera upright, 2 face the camera with pitch (no roll)\n"
 		"mirv_meow_world visible <id> 0|1 | remove <id> | clear | enabled [0|1] | list\n"
 	);
 }
