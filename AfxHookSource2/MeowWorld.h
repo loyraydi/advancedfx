@@ -54,6 +54,7 @@ private:
 		float opacity = 1.0f;
 		float brightness = 1.0f;
 		int blend = 0; // 0 обычное, 1 умножение, 2 экран, 3 добавление, 4 свет стены
+		bool freecamOnly = false; // только на пролётке (камера далеко от глаз игрока, за которым смотрим)
 		int group = 0;    // плашки одной группы не налезают друг на друга на экране: дальние поднимаются
 		float lift = 0;   // текущий подъём (плавно идёт к нужному)
 		bool occlude = true; // дым закрывает картинку (выкл — у таймеров смоков над своим дымом)
@@ -90,6 +91,12 @@ private:
 	};
 	std::unique_ptr<PendingPick> m_Pick; // под m_Mutex
 	bool m_PickInFlight = false;          // под m_Mutex
+	// Пролётка: камера далеко от глаз игрока, за которым смотрим (их шлёт клиент по GSI).
+	// Пролётки ИИ/кампас ведёт HLAE поверх обычного режима зрителя — игра этого не видит.
+	bool m_HaveObserved = false;
+	double m_Observed[3] = {0, 0, 0};
+	bool m_FreeCam = false;
+	bool m_FreeCamReported = false;
 	std::string m_PendingMessage;         // под m_Mutex, печатается из потока движка
 
 	struct GpuTex {

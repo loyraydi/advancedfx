@@ -201,6 +201,7 @@ void CMeowWorld::OnEngineThread_SetupViewDone(const SOURCESDK::VMatrix& m) {
 		for (auto& kv : m_Items) {
 			Item& it = kv.second;
 			if (!m_Enabled || !it.visible || !it.image || !it.image->w) continue;
+			if (it.freecamOnly && !m_FreeCam) continue;
 			Prep p;
 			p.id = &kv.first;
 			p.it = &it;
@@ -294,6 +295,24 @@ void CMeowWorld::OnEngineThread_SetupViewDone(const SOURCESDK::VMatrix& m) {
 }
 
 void CMeowWorld::OnEngineThread_EndFrame() {
+	{
+		// Режим камеры — по итоговому виду кадра (до этого был ещё вид неба)
+		std::unique_lock<std::mutex> lock(m_Mutex);
+		if (m_HaveCam) {
+			// С запасом (гистерезис): GSI отстаёт на ~0.1 с, игрок за это время сдвигается
+			bool free = true;
+			if (m_HaveObserved) {
+				double dx = m_CamPos[0] - m_Observed[0], dy = m_CamPos[1] - m_Observed[1], dz = m_CamPos[2] - m_Observed[2];
+				double d = sqrt(dx * dx + dy * dy + dz * dz);
+				free = m_FreeCam ? d > 90 : d > 150;
+			}
+			if (free != m_FreeCam || !m_FreeCamReported) {
+				m_FreeCam = free;
+				m_FreeCamReported = true;
+				m_PendingMessage += free ? "meow_world_cam free\n" : "meow_world_cam eye\n";
+			}
+		}
+	}
 	std::unique_lock<std::mutex> lock(m_QueueMutex);
 	m_Queue.emplace_back(nullptr);
 }
@@ -754,6 +773,20 @@ void CMeowWorld::Console(int argc, const char* const* argv) {
 		for (int i = 0; i < 4; ++i) m_SmokeShape[i] = (float)atof(argv[2 + i]);
 		return;
 	}
+	if (!_stricmp(cmd, "observed")) {
+		// observed <x> <y> <z> — глаза игрока, за которым смотрим; observed none — ни за кем
+		std::unique_lock<std::mutex> lock(m_Mutex);
+		if (argc >= 5) { m_HaveObserved = true; for (int i = 0; i < 3; ++i) m_Observed[i] = atof(argv[2 + i]); }
+		else m_HaveObserved = false;
+		return;
+	}
+	if (!_stricmp(cmd, "freecam") && argc >= 4) {
+		// freecam <id> 0|1 — показывать только на пролётке
+		std::unique_lock<std::mutex> lock(m_Mutex);
+		auto it = m_Items.find(argv[2]);
+		if (it != m_Items.end()) it->second.freecamOnly = atoi(argv[3]) != 0;
+		return;
+	}
 	if (!_stricmp(cmd, "group") && argc >= 4) {
 		// group <id> <n> — картинки одной группы (n > 0) разводятся на экране, дальние поднимаются
 		std::unique_lock<std::mutex> lock(m_Mutex);
@@ -815,6 +848,8 @@ void CMeowWorld::Console(int argc, const char* const* argv) {
 		"mirv_meow_world face <id> 0|1|2 - 0 fixed angles, 1 face the camera upright, 2 face the camera with pitch (no roll)\n"
 		"mirv_meow_world smokes [<x> <y> <z> <scale 0..1>]... - smokes on the map (pictures behind them fade out); no args = none\n"
 		"mirv_meow_world smokeshape <radius=150> <height=85> <centre above point=70> <units per 1/e=18>\n"
+		"mirv_meow_world observed <x> <y> <z> | none - eyes of the observed player; camera far from them = free camera (prints meow_world_cam free|eye)\n"
+		"mirv_meow_world freecam <id> 0|1 - show only while the camera is free (flyby)\n"
 		"mirv_meow_world group <id> <n> - pictures of one group (n > 0) never overlap on screen: farther ones rise\n"
 		"mirv_meow_world occlude <id> 0|1 - smokes hide this picture (default 1)\n"
 		"mirv_meow_world visible <id> 0|1 | remove <id> | clear | enabled [0|1] | list\n"
