@@ -6,6 +6,7 @@
 
 #include <d3dcompiler.h>
 #include <wincodec.h>
+#include <algorithm>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -195,14 +196,15 @@ void CMeowWorld::OnEngineThread_SetupViewDone(const SOURCESDK::VMatrix& m) {
 		snap->smokes = m_Smokes;
 		for (int i = 0; i < 4; ++i) snap->smokeShape[i] = m_SmokeShape[i];
 		if (!m_Enabled && !snap->pick) return;
+		struct Prep { const std::string* id; Item* it; float c[4][3]; double dist; };
+		std::vector<Prep> prep;
 		for (auto& kv : m_Items) {
-			const Item& it = kv.second;
+			Item& it = kv.second;
 			if (!m_Enabled || !it.visible || !it.image || !it.image->w) continue;
-			DrawQuad q;
-			q.id = kv.first;
-			q.image = it.image;
-			q.version = it.version;
-			float c[4][3];
+			Prep p;
+			p.id = &kv.first;
+			p.it = &it;
+			float (&c)[4][3] = p.c;
 			if (it.face && m_HaveCam) {
 				// Лицом к камере: forward смотрит из картинки на камеру, крена нет — стоит ровно
 				Item faced = it;
@@ -216,13 +218,72 @@ void CMeowWorld::OnEngineThread_SetupViewDone(const SOURCESDK::VMatrix& m) {
 				}
 				Corners(faced, c);
 			} else Corners(it, c);
-			for (int k = 0; k < 4; ++k) { ToClip(m, c[k], q.clip[k]); for (int i = 0; i < 3; ++i) q.world[k][i] = c[k][i]; }
+			double d[3] = {it.pos[0] - m_CamPos[0], it.pos[1] - m_CamPos[1], it.pos[2] - m_CamPos[2]};
+			p.dist = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+			prep.push_back(p);
+		}
+
+		// Плашки одной группы (над игроками) не налезают друг на друга НА ЭКРАНЕ: ближняя к камере
+		// стоит на месте, дальняя поднимается этажом выше, пока не перестанет перекрываться.
+		// Сравниваем верхние 3/4 картинки (низ — тонкая ножка). Подъём идёт плавно.
+		std::sort(prep.begin(), prep.end(), [](const Prep& a, const Prep& b) { return a.dist < b.dist; });
+		struct Rect { int group; float x0, y0, x1, y1; };
+		std::vector<Rect> rects;
+		auto screenRect = [&](const float c[4][3], float lift, Rect& r) {
+			float pts[4][3];
+			for (int k = 0; k < 4; ++k) for (int i = 0; i < 3; ++i) pts[k][i] = c[k][i] + (i == 2 ? lift : 0.0f);
+			// низ без ножки: 3/4 высоты от верха
+			for (int k = 2; k < 4; ++k) for (int i = 0; i < 3; ++i) pts[k][i] = pts[3 - k][i] + (pts[k][i] - pts[3 - k][i]) * 0.75f;
+			r.x0 = r.y0 = 1e9f; r.x1 = r.y1 = -1e9f;
+			for (int k = 0; k < 4; ++k) {
+				float cl[4];
+				ToClip(m, pts[k], cl);
+				if (cl[3] <= 1.0f) return false; // за камерой
+				float x = cl[0] / cl[3], y = cl[1] / cl[3];
+				r.x0 = x < r.x0 ? x : r.x0; r.x1 = x > r.x1 ? x : r.x1;
+				r.y0 = y < r.y0 ? y : r.y0; r.y1 = y > r.y1 ? y : r.y1;
+			}
+			return true;
+		};
+		for (Prep& p : prep) {
+			Item& it = *p.it;
+			if (!it.group || !m_HaveCam) continue;
+			double hx = p.c[0][0] - p.c[3][0], hy = p.c[0][1] - p.c[3][1], hz = p.c[0][2] - p.c[3][2];
+			float step = (float)(sqrt(hx * hx + hy * hy + hz * hz) * 0.8);
+			float target = 0;
+			Rect placed = {it.group, 0, 0, 0, 0};
+			bool visible = false;
+			for (int lvl = 0; lvl <= 4; ++lvl) {
+				Rect r = {it.group, 0, 0, 0, 0};
+				if (!screenRect(p.c, lvl * step, r)) break;
+				bool clash = false;
+				for (const Rect& o : rects)
+					if (o.group == it.group && r.x0 < o.x1 + 0.004f && o.x0 < r.x1 + 0.004f && r.y0 < o.y1 + 0.006f && o.y0 < r.y1 + 0.006f) { clash = true; break; }
+				target = lvl * step; placed = r; visible = true;
+				if (!clash) break;
+			}
+			if (visible) rects.push_back(placed);
+			it.lift += (target - it.lift) * 0.18f;
+			if (fabs(target - it.lift) < 0.05f) it.lift = target;
+			for (int k = 0; k < 4; ++k) p.c[k][2] += it.lift;
+		}
+
+		for (Prep& p : prep) {
+			const Item& it = *p.it;
+			DrawQuad q;
+			q.id = *p.id;
+			q.image = it.image;
+			q.version = it.version;
+			for (int k = 0; k < 4; ++k) { ToClip(m, p.c[k], q.clip[k]); for (int i = 0; i < 3; ++i) q.world[k][i] = p.c[k][i]; }
 			q.occlude = it.occlude;
 			q.opacity = it.opacity;
 			q.brightness = it.brightness;
 			q.blend = it.blend;
+			q.dist = (float)p.dist;
 			snap->quads.push_back(std::move(q));
 		}
+		// Дальние первыми, ближние поверх: картинки не пишут глубину, порядок решает, кто сверху
+		std::reverse(snap->quads.begin(), snap->quads.end());
 	}
 	if (snap->quads.empty() && !snap->pick) return;
 
@@ -693,6 +754,13 @@ void CMeowWorld::Console(int argc, const char* const* argv) {
 		for (int i = 0; i < 4; ++i) m_SmokeShape[i] = (float)atof(argv[2 + i]);
 		return;
 	}
+	if (!_stricmp(cmd, "group") && argc >= 4) {
+		// group <id> <n> — картинки одной группы (n > 0) разводятся на экране, дальние поднимаются
+		std::unique_lock<std::mutex> lock(m_Mutex);
+		auto it = m_Items.find(argv[2]);
+		if (it != m_Items.end()) it->second.group = atoi(argv[3]);
+		return;
+	}
 	if (!_stricmp(cmd, "occlude") && argc >= 4) {
 		std::unique_lock<std::mutex> lock(m_Mutex);
 		auto it = m_Items.find(argv[2]);
@@ -747,6 +815,7 @@ void CMeowWorld::Console(int argc, const char* const* argv) {
 		"mirv_meow_world face <id> 0|1|2 - 0 fixed angles, 1 face the camera upright, 2 face the camera with pitch (no roll)\n"
 		"mirv_meow_world smokes [<x> <y> <z> <scale 0..1>]... - smokes on the map (pictures behind them fade out); no args = none\n"
 		"mirv_meow_world smokeshape <radius=150> <height=85> <centre above point=70> <units per 1/e=18>\n"
+		"mirv_meow_world group <id> <n> - pictures of one group (n > 0) never overlap on screen: farther ones rise\n"
 		"mirv_meow_world occlude <id> 0|1 - smokes hide this picture (default 1)\n"
 		"mirv_meow_world visible <id> 0|1 | remove <id> | clear | enabled [0|1] | list\n"
 	);
