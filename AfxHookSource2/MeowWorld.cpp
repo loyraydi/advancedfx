@@ -190,6 +190,12 @@ void CMeowWorld::OnEngineThread_SetupViewDone(const SOURCESDK::VMatrix& m) {
 	{
 		std::unique_lock<std::mutex> lock(m_Mutex);
 		m_HaveCam = CameraFromMatrix(m, m_CamPos, m_CamFwd);
+		// За кадр видов несколько (небо, мир, отражения) — для «пролётка или глаза» берём ближний к глазам
+		if (m_HaveCam && m_HaveObserved) {
+			double dx = m_CamPos[0] - m_Observed[0], dy = m_CamPos[1] - m_Observed[1], dz = m_CamPos[2] - m_Observed[2];
+			double d = sqrt(dx * dx + dy * dy + dz * dz);
+			if (d < m_FrameMinDist) m_FrameMinDist = d;
+		}
 		if (!m_PendingMessage.empty()) { advancedfx::Message("%s", m_PendingMessage.c_str()); m_PendingMessage.clear(); }
 		snap->pick = m_Pick != nullptr;
 		for (int i = 0; i < 3; ++i) snap->cam[i] = (float)m_CamPos[i];
@@ -300,18 +306,18 @@ void CMeowWorld::OnEngineThread_EndFrame() {
 		std::unique_lock<std::mutex> lock(m_Mutex);
 		if (m_HaveCam) {
 			// С запасом (гистерезис): GSI отстаёт на ~0.1 с, игрок за это время сдвигается
+			// Новый режим — только если держится 8 кадров подряд (без мигания)
 			bool free = true;
-			if (m_HaveObserved) {
-				double dx = m_CamPos[0] - m_Observed[0], dy = m_CamPos[1] - m_Observed[1], dz = m_CamPos[2] - m_Observed[2];
-				double d = sqrt(dx * dx + dy * dy + dz * dz);
-				free = m_FreeCam ? d > 90 : d > 150;
-			}
-			if (free != m_FreeCam || !m_FreeCamReported) {
+			if (m_HaveObserved) free = m_FreeCam ? m_FrameMinDist > 90 : m_FrameMinDist > 150;
+			if (free == m_FreeCam && m_FreeCamReported) m_FreeCamFrames = 0;
+			else if (++m_FreeCamFrames >= 8 || !m_FreeCamReported) {
+				m_FreeCamFrames = 0;
 				m_FreeCam = free;
 				m_FreeCamReported = true;
 				m_PendingMessage += free ? "meow_world_cam free\n" : "meow_world_cam eye\n";
 			}
 		}
+		m_FrameMinDist = 1e30;
 	}
 	std::unique_lock<std::mutex> lock(m_QueueMutex);
 	m_Queue.emplace_back(nullptr);

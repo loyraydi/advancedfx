@@ -97,6 +97,8 @@ private:
 	double m_Observed[3] = {0, 0, 0};
 	bool m_FreeCam = false;
 	bool m_FreeCamReported = false;
+	int m_FreeCamFrames = 0;
+	double m_FrameMinDist = 1e30;
 	std::string m_PendingMessage;         // под m_Mutex, печатается из потока движка
 
 	struct GpuTex {
